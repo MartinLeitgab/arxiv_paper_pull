@@ -40,40 +40,44 @@ class ArxivCitationDownloader:
         os.makedirs(self.download_dir, exist_ok=True)
         
         # Rate limiting
-        self.request_delay = 1.0  # seconds between requests
+        self.request_delay = 4.0  # seconds between requests, per arxiv API guidelines
         
-    def get_arxiv_cs_ai_papers(self, max_results=2000):
+    def get_arxiv_cs_ai_papers(self, max_results=60000):
         """Get recent cs.AI papers from arXiv API"""
-        print("Fetching cs.AI papers from arXiv...")
+        print(f"Fetching {max_results} cs.AI papers from arXiv...")
         
+
+        # Format dates for arXiv query
+        end_date = datetime(2025, 7, 1) #datetime.now()
+        start_date = datetime(2024, 1, 1) # knowledge cutoff GPT 4o Dec 2023
+        start_str = start_date.strftime('%Y%m%d')
+        end_str = end_date.strftime('%Y%m%d')
+        query = f'cat:cs.AI AND submittedDate:[{start_str}0000 TO {end_str}2359]'
+
         # Get papers from the last 3 years to have enough for citation analysis
         papers = []
         start_index = 0
-        batch_size = 5000
+        batch_size = 10
         
         while len(papers) < max_results:
             query_params = {
-                'search_query': 'cat:cs.AI',
+                'search_query': query, # better than 'cat:cs.AI',
                 'start': start_index,
                 'max_results': batch_size,
-                'sortBy': 'submittedDate',
-                'sortOrder': 'descending'
+                #'sortBy': 'submittedDate',
+                #'sortOrder': 'descending'
             }
             
             query_string = urllib.parse.urlencode(query_params)
             print(f"start_index = {start_index}, len(papers) = {len(papers)}, fetching papers from arXiv with query: {query_string}")
             url = f"{self.arxiv_base}?{query_string}"
-                            
+            print(f"  fetching from arXiv: {url}")                
             try:
                 response = requests.get(url)
                 response.raise_for_status()
                 
                 # Split response into lines and print first 10
-                #lines = response.text.split('\n')
-                #print(f"DEBUG first few lines of arxiv response:")
-                #for i, line in enumerate(lines[:], 1):
-                #    print(f"{i:2d}: {line}")
-
+                lines = response.text.split('\n')
                 # Parse XML response
                 root = ET.fromstring(response.content)
                 entries = root.findall('{http://www.w3.org/2005/Atom}entry')
@@ -107,7 +111,7 @@ class ArxivCitationDownloader:
                         'citations': 0  # Will be filled by Semantic Scholar
                     })
                 
-                start_index += batch_size
+                start_index += len(entries) # better than batch_size, arxiv sometimes returns fewer hits than maxresult/page size
                 time.sleep(self.request_delay)
                 
             except Exception as e:
@@ -118,57 +122,75 @@ class ArxivCitationDownloader:
 
         return papers
     
-    def get_semantic_scholar_citations(self, papers):
+    def get_semantic_scholar_citations(self, papers): # may need to look for other citation tracking with higher rate limit, or apply for semantic scholar api key for higher limit
         """Get citation counts from Semantic Scholar API"""
         print("Getting citation counts from Semantic Scholar...")
         
         papers_with_citations = []
         
         for paper in tqdm(papers, desc="Fetching citations"):
-            try:
-                # Search for paper by title on Semantic Scholar
-                search_url = f"{self.semantic_scholar_base}/paper/search"
-                search_params = {
-                    'query': paper['title'],
-                    'fields': 'title,authors,citationCount,externalIds,year'
-                }
-                
-                response = requests.get(search_url, params=search_params)
-                response.raise_for_status()
-                
-                search_results = response.json()
-                
-                # Find matching paper (look for arXiv ID in externalIds)
-                best_match = None
-                for result in search_results.get('data', []):
-                    external_ids = result.get('externalIds', {})
-                    if external_ids and 'ArXiv' in external_ids:
-                        arxiv_id_clean = paper['arxiv_id'].replace('v1', '').replace('v2', '').replace('v3', '')
-                        if external_ids['ArXiv'] == arxiv_id_clean:
-                            best_match = result
-                            break
-                
-                # If no exact match, try title similarity
-                if not best_match and search_results.get('data'):
-                    best_match = search_results['data'][0]  # Take first result
-                
-                if best_match:
-                    paper['citations'] = best_match.get('citationCount', 0)
-                    paper['semantic_scholar_id'] = best_match.get('paperId', '')
-                else:
-                    paper['citations'] = 0
-                
-                papers_with_citations.append(paper)
-                
-                # Rate limiting
-                time.sleep(self.request_delay)
-                
-            except Exception as e:
-                print(f"Error getting citations for {paper['arxiv_id']}: {e}")
-                paper['citations'] = 0
-                papers_with_citations.append(paper)
-                time.sleep(self.request_delay)
-        
+             while True and len(papers_with_citations) < 2:  # Retry loop for each paper until do not receive rate error
+                try:
+                    # Search for paper by title on Semantic Scholar
+                    search_url = f"{self.semantic_scholar_base}/paper/search"
+                    search_params = {
+                        'query': paper['title'],
+                        'fields': 'title,authors,citationCount,externalIds,year'
+                    }
+                    
+                    response = requests.get(search_url, params=search_params)
+                    response.raise_for_status()
+                    
+                    search_results = response.json()
+                    
+                    # Find matching paper (look for arXiv ID in externalIds)
+                    best_match = None
+                    for result in search_results.get('data', []):
+                        external_ids = result.get('externalIds', {})
+                        if external_ids and 'ArXiv' in external_ids:
+                            arxiv_id_clean = paper['arxiv_id'].replace('v1', '').replace('v2', '').replace('v3', '')
+                            if external_ids['ArXiv'] == arxiv_id_clean:
+                                best_match = result
+                                break
+                    
+                    # If no exact match, try title similarity
+                    if not best_match and search_results.get('data'):
+                        best_match = search_results['data'][0]  # Take first result
+                    
+                    if best_match:
+                        paper['citations'] = best_match.get('citationCount', 0)
+                        paper['semantic_scholar_id'] = best_match.get('paperId', '')
+                    else:
+                        paper['citations'] = 0
+                    print(f"DEBUG Found {paper['citations']} citations for {paper['arxiv_id']}: {paper['title']}")
+                    papers_with_citations.append(paper)
+                    break # Exit retry loop on success
+                    # Rate limiting- instead do opportunistically only if get errors
+                    #time.sleep(self.request_delay)
+                    
+                except requests.exceptions.HTTPError as e:
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("Retry-After", "60"))
+                        print(f"Rate limit hit for '{paper}'. Retrying after {retry_after} seconds...")
+                        time.sleep(retry_after)
+                    else:
+                        print(f"HTTP error for '{paper}': {e}")
+                        break  # If it's not a retryable error, break to avoid infinite loop
+                    #print(f"Error getting citations for {paper['arxiv_id']}: {e}")
+                    #if response.status_code == 429:
+                    #    print("Rate limit exceeded (429). Full response:")
+                    #    print("Status Code:", response.status_code)
+                    #    print("Headers:", response.headers)
+                    #    print("Body:", response.text)  # or response.content for bytes
+                    #else:
+                    #    print("HTTP error occurred:", err)
+                    #paper['citations'] = 0
+                    #papers_with_citations.append(paper)
+                    #time.sleep(self.request_delay)
+                except Exception as e:
+                    print(f"Unexpected error for '{paper}': {e}")
+                    break  # Handle other errors gracefully
+    
         return papers_with_citations
     
     def download_paper_pdf(self, arxiv_id, title, authors):
@@ -245,14 +267,14 @@ class ArxivCitationDownloader:
         
         # Step 1: Get cs.AI papers from arXiv
         print("step 1 get paper list from arxiv")
-        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=2000)
+        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=3)
         self.save_papers_to_excel(arxiv_papers) # save intermediate list for debug
-        return
-
+        
         # Step 2: Get citation counts from Semantic Scholar
         print("step 2 get citations for all papers")
         papers_with_citations = self.get_semantic_scholar_citations(arxiv_papers)
         
+        return
         # Step 3: Sort by citation count and get top papers
         top_papers = sorted(papers_with_citations, 
                           key=lambda x: x['citations'], 

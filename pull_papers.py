@@ -32,7 +32,7 @@ from openpyxl.utils import get_column_letter
 
 
 class ArxivCitationDownloader:
-    def __init__(self, max_papers=100):
+    def __init__(self, max_papers=1000):
         self.max_papers = max_papers
         self.semantic_scholar_base = "https://api.semanticscholar.org/graph/v1"
         self.arxiv_base = "http://export.arxiv.org/api/query"
@@ -57,14 +57,14 @@ class ArxivCitationDownloader:
         # Get papers from the last 3 years to have enough for citation analysis
         papers = []
         start_index = 0
-        batch_size = 10
+        batch_size = 1000 # arxiv max returns of same query (like pagination)
         
         while len(papers) < max_results:
             query_params = {
                 'search_query': query, # better than 'cat:cs.AI',
                 'start': start_index,
                 'max_results': batch_size,
-                #'sortBy': 'submittedDate',
+                #'sortBy': 'submittedDate', # messes up pagination/batch size
                 #'sortOrder': 'descending'
             }
             
@@ -129,7 +129,7 @@ class ArxivCitationDownloader:
         papers_with_citations = []
         
         for paper in tqdm(papers, desc="Fetching citations"):
-             while True and len(papers_with_citations) < 2:  # Retry loop for each paper until do not receive rate error
+             while True : #and len(papers_with_citations) < 2:  # Retry loop for each paper until do not receive rate error
                 try:
                     # Search for paper by title on Semantic Scholar
                     search_url = f"{self.semantic_scholar_base}/paper/search"
@@ -170,7 +170,7 @@ class ArxivCitationDownloader:
                     
                 except requests.exceptions.HTTPError as e:
                     if response.status_code == 429:
-                        retry_after = int(response.headers.get("Retry-After", "5"))
+                        retry_after = int(response.headers.get("Retry-After", "1")) # keep frequent as IP-based and may open up soon
                         print(f"Rate limit hit for '{paper}'. Retrying after {retry_after} seconds...")
                         time.sleep(retry_after)
                     else:
@@ -267,14 +267,13 @@ class ArxivCitationDownloader:
         
         # Step 1: Get cs.AI papers from arXiv
         print("step 1 get paper list from arxiv")
-        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=3)
+        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=1000)
         self.save_papers_to_excel(arxiv_papers) # save intermediate list for debug
         
         # Step 2: Get citation counts from Semantic Scholar
         print("step 2 get citations for all papers")
         papers_with_citations = self.get_semantic_scholar_citations(arxiv_papers)
         
-        return
         # Step 3: Sort by citation count and get top papers
         top_papers = sorted(papers_with_citations, 
                           key=lambda x: x['citations'], 
@@ -300,6 +299,8 @@ class ArxivCitationDownloader:
             
             if filepath:
                 successful_downloads += 1
+            else:
+                print(f"Failed to download {paper['arxiv_id']}: {paper['title']}, citations {paper['citations']}, maybe withdrawn")
             
             time.sleep(0.5)  # Be nice to arXiv servers
         
@@ -318,7 +319,7 @@ if __name__ == "__main__":
     #choice = input("Enter choice (1 or 2): ").strip()
     
     #if choice == "1":
-    downloader = ArxivCitationDownloader(max_papers=100)
+    downloader = ArxivCitationDownloader(max_papers=1000)
     top_papers = downloader.run()
     #elif choice == "2":
     #    downloader = CuratedListDownloader()

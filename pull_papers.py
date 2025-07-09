@@ -50,74 +50,140 @@ class ArxivCitationDownloader:
         # Format dates for arXiv query
         end_date = datetime(2025, 7, 1) #datetime.now()
         start_date = datetime(2024, 1, 1) # knowledge cutoff GPT 4o Dec 2023
-        start_str = start_date.strftime('%Y%m%d')
-        end_str = end_date.strftime('%Y%m%d')
-        query = f'cat:cs.AI AND submittedDate:[{start_str}0000 TO {end_str}2359]'
-
+        #start_str = start_date.strftime('%Y%m%d')
+        #end_str = end_date.strftime('%Y%m%d')
+        #query = f'cat:cs.AI AND submittedDate:[{start_str}0000 TO {end_str}2359]'
         # Get papers from the last 3 years to have enough for citation analysis
         papers = []
-        start_index = 0
-        batch_size = 1000 # arxiv max returns of same query (like pagination)
-        
-        while len(papers) < max_results:
-            query_params = {
-                'search_query': query, # better than 'cat:cs.AI',
-                'start': start_index,
-                'max_results': batch_size,
-                #'sortBy': 'submittedDate', # messes up pagination/batch size
-                #'sortOrder': 'descending'
-            }
-            
-            query_string = urllib.parse.urlencode(query_params)
-            print(f"start_index = {start_index}, len(papers) = {len(papers)}, fetching papers from arXiv with query: {query_string}")
-            url = f"{self.arxiv_base}?{query_string}"
-            print(f"  fetching from arXiv: {url}")                
-            try:
-                response = requests.get(url)
-                response.raise_for_status()
-                
-                # Split response into lines and print first 10
-                lines = response.text.split('\n')
-                # Parse XML response
-                root = ET.fromstring(response.content)
-                entries = root.findall('{http://www.w3.org/2005/Atom}entry')
-                
-                if not entries:
-                    print(f"   empty query return!")
-                    lines = response.text.split('\n')
-                    print(f"DEBUG first few lines of arxiv response:")
-                    for i, line in enumerate(lines[:], 1):
-                        print(f"{i:2d}: {line}")
-                    break
-                print(f"  fetched {len(entries)} entries from arXiv")
-                for entry in entries:
-                    arxiv_id = entry.find('{http://www.w3.org/2005/Atom}id').text.split('/')[-1]
-                    title = entry.find('{http://www.w3.org/2005/Atom}title').text.strip()
-                    
-                    # Get authors
-                    authors = []
-                    for author in entry.findall('{http://www.w3.org/2005/Atom}author'):
-                        name = author.find('{http://www.w3.org/2005/Atom}name').text
-                        authors.append(name)
-                    
-                    # Get publication date
-                    published = entry.find('{http://www.w3.org/2005/Atom}published').text[:10]
-                    
-                    papers.append({
-                        'arxiv_id': arxiv_id,
-                        'title': title,
-                        'authors': authors,
-                        'published': published,
-                        'citations': 0  # Will be filled by Semantic Scholar
-                    })
-                
-                start_index += len(entries) # better than batch_size, arxiv sometimes returns fewer hits than maxresult/page size
-                time.sleep(self.request_delay)
-                
-            except Exception as e:
-                print(f"Error fetching arXiv papers: {e}")
+
+
+        # due to api instability with pagination, keep returns to 400 per query, and use two week-based pagination
+        current_start = start_date
+
+        while current_start < end_date: # continue until have scanned all max available input paper
+
+            if len(papers) >= max_results: # continue until have enough input papers
                 break
-        
+            
+            slice_end = min(current_start + timedelta(days=7), end_date)
+            start_str = current_start.strftime('%Y%m%d')
+            end_str = slice_end.strftime('%Y%m%d')
+            print(f"\n new time slice, current_start = {current_start.strftime('%Y-%m-%d')}, end_date = {slice_end.strftime('%Y-%m-%d')}")
+            
+            query = f'cat:cs.AI AND submittedDate:[{start_str}0000 TO {end_str}2359]'
+
+            start_index = 0
+            batch_size = 400 # inherent issue in arxiv- beyond 400 results pagination for higher pages breaks down; need to keep timeslice close to 400 result returns
+            is_lastbatchinquery = False
+
+            while is_lastbatchinquery == False : # loop until reach end of current time slice query results
+
+                query_params = {
+                    'search_query': query, # better than 'cat:cs.AI',
+                    'start': start_index,
+                    'max_results': batch_size,
+                    #'sortBy': 'submittedDate', # messes up pagination/batch size
+                    #'sortOrder': 'descending'
+                }
+                
+                query_string = urllib.parse.urlencode(query_params)
+                print(f"start_index = {start_index}, len(papers) = {len(papers)}, fetching papers from arXiv with query: {query_string}")
+                url = f"{self.arxiv_base}?{query_string}"
+                print(f"  fetching from arXiv: {url}")                
+                try:
+                    response = requests.get(url)
+                    response.raise_for_status()
+                    
+                    # Parse XML response
+                    root = ET.fromstring(response.content)
+                    
+                    # Look for entries first
+                    entries = root.findall('{http://www.w3.org/2005/Atom}entry')
+                    
+                    '''
+                    # Not provided by arxiv: Check for arXiv API errors (returned as special entry elements)
+                    error_entries = []
+                    for entry in entries:
+                        entry_id = entry.find('{http://www.w3.org/2005/Atom}id')
+                        if entry_id is not None and 'arxiv.org/api/errors' in entry_id.text:
+                            error_entries.append(entry)
+                    
+                    if error_entries:
+                        print("arXiv API Error(s) found:")
+                        for error_entry in error_entries:
+                            title = error_entry.find('{http://www.w3.org/2005/Atom}title')
+                            summary = error_entry.find('{http://www.w3.org/2005/Atom}summary')
+                            entry_id = error_entry.find('{http://www.w3.org/2005/Atom}id')
+                            
+                            title_text = title.text if title is not None else "Unknown error"
+                            summary_text = summary.text if summary is not None else "No description"
+                            id_text = entry_id.text if entry_id is not None else "No ID"
+                            
+                            print(f"  Error: {title_text}")
+                            print(f"  Description: {summary_text}")
+                            print(f"  ID: {id_text}")
+                        
+                        # Decide whether to retry or abort based on error type
+                        print(f"Waiting {self.request_delay} seconds before retrying...")
+                        time.sleep(self.request_delay)
+                        continue
+                    '''
+                    # Filter out error entries from the actual paper entries
+                    paper_entries = [entry for entry in entries if not (
+                        entry.find('{http://www.w3.org/2005/Atom}id') is not None and 
+                        'arxiv.org/api/errors' in entry.find('{http://www.w3.org/2005/Atom}id').text
+                    )]
+                    
+                    if len(paper_entries) < batch_size and len(paper_entries) > 0:
+                        print(f"   Incomplete or last query return- Got {len(paper_entries)} paper entries, expected {batch_size}")
+                        is_lastbatchinquery = True
+                    elif len(paper_entries) == 0:
+                        print("   No paper entries found!")
+                        
+                        # Print response for debugging
+                        #lines = response.text.split('\n')
+                        #print("First few lines of arxiv response:")
+                        #for i, line in enumerate(lines[:10], 1):
+                        #    print(f"{i:2d}: {line}")
+                        
+                        #print(f"Waiting for {self.request_delay} seconds before retrying...")
+                        #time.sleep(self.request_delay)
+                        print(f"Error fetching arXiv papers: empty response, need to debug")
+                        exit()
+                    
+                    # process returned entries    
+                    print(f"  fetched {len(entries)} entries from arXiv")
+                    for entry in entries:
+                        arxiv_id = entry.find('{http://www.w3.org/2005/Atom}id').text.split('/')[-1]
+                        title = entry.find('{http://www.w3.org/2005/Atom}title').text.strip()
+                        
+                        # Get authors
+                        authors = []
+                        for author in entry.findall('{http://www.w3.org/2005/Atom}author'):
+                            name = author.find('{http://www.w3.org/2005/Atom}name').text
+                            authors.append(name)
+                        
+                        # Get publication date
+                        published = entry.find('{http://www.w3.org/2005/Atom}published').text[:10]
+                        
+                        papers.append({
+                            'arxiv_id': arxiv_id,
+                            'title': title,
+                            'authors': authors,
+                            'published': published,
+                            'citations': 0  # Will be filled by Semantic Scholar
+                        })
+                    
+                    start_index += len(entries) # better than batch_size, arxiv sometimes returns fewer hits than maxresult/page size
+                    time.sleep(self.request_delay)
+                    
+                except Exception as e:
+                    print(f"Error fetching arXiv papers: {e}")
+                    break
+            # End of time slice loop
+            current_start = slice_end # reset for next time slice in time slice loop
+
+        # End of overall time window loop (hope to have reached targeted paper number before reaching end point)
         print(f"Retrieved {len(papers)} cs.AI papers from arXiv")
 
         return papers
@@ -267,7 +333,7 @@ class ArxivCitationDownloader:
         
         # Step 1: Get cs.AI papers from arXiv
         print("step 1 get paper list from arxiv")
-        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=1000)
+        arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=10000)
         self.save_papers_to_excel(arxiv_papers) # save intermediate list for debug
         
         # Step 2: Get citation counts from Semantic Scholar
@@ -319,7 +385,7 @@ if __name__ == "__main__":
     #choice = input("Enter choice (1 or 2): ").strip()
     
     #if choice == "1":
-    downloader = ArxivCitationDownloader(max_papers=1000)
+    downloader = ArxivCitationDownloader(max_papers=10000)
     top_papers = downloader.run()
     #elif choice == "2":
     #    downloader = CuratedListDownloader()

@@ -1,22 +1,4 @@
-# %%
-import arxiv
 
-def download_with_arxiv_package(arxiv_id, download_dir="./"):
-    """Download using the official arxiv Python package"""
-    # Search for the paper
-    search = arxiv.Search(id_list=[arxiv_id])
-    paper = next(search.results())
-    
-    # Download PDF
-    filename = paper.download_pdf(dirpath=download_dir)
-    print(f"Downloaded: {filename}")
-    
-    return paper  # Returns paper object with metadata
-
-# Usage
-paper = download_with_arxiv_package("2301.00001")
-print(f"Title: {paper.title}")
-print(f"Authors: {[author.name for author in paper.authors]}")
 # %%
 # %%
 
@@ -43,6 +25,11 @@ from tqdm import tqdm
 from datetime import datetime, timedelta
 import urllib.parse
 import xml.etree.ElementTree as ET
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+
 
 class ArxivCitationDownloader:
     def __init__(self, max_papers=100):
@@ -62,7 +49,7 @@ class ArxivCitationDownloader:
         # Get papers from the last 3 years to have enough for citation analysis
         papers = []
         start_index = 0
-        batch_size = 100
+        batch_size = 5000
         
         while len(papers) < max_results:
             query_params = {
@@ -81,12 +68,22 @@ class ArxivCitationDownloader:
                 response = requests.get(url)
                 response.raise_for_status()
                 
+                # Split response into lines and print first 10
+                #lines = response.text.split('\n')
+                #print(f"DEBUG first few lines of arxiv response:")
+                #for i, line in enumerate(lines[:], 1):
+                #    print(f"{i:2d}: {line}")
+
                 # Parse XML response
                 root = ET.fromstring(response.content)
                 entries = root.findall('{http://www.w3.org/2005/Atom}entry')
                 
                 if not entries:
                     print(f"   empty query return!")
+                    lines = response.text.split('\n')
+                    print(f"DEBUG first few lines of arxiv response:")
+                    for i, line in enumerate(lines[:], 1):
+                        print(f"{i:2d}: {line}")
                     break
                 print(f"  fetched {len(entries)} entries from arXiv")
                 for entry in entries:
@@ -118,6 +115,7 @@ class ArxivCitationDownloader:
                 break
         
         print(f"Retrieved {len(papers)} cs.AI papers from arXiv")
+
         return papers
     
     def get_semantic_scholar_citations(self, papers):
@@ -207,6 +205,40 @@ class ArxivCitationDownloader:
             json.dump(papers, f, indent=2, ensure_ascii=False)
         print(f"Metadata saved to {filepath}")
     
+    def save_papers_to_excel(self, papers, filename="arxiv_cs_ai_papers.xlsx"):
+        """Save papers to Excel file using pandas"""
+        # Create DataFrame
+        df = pd.DataFrame(papers)
+        
+        # Save to Excel
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Papers', index=False)
+            
+            # Get the workbook and worksheet
+            workbook = writer.book
+            worksheet = writer.sheets['Papers']
+            
+            # Auto-adjust column widths
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                
+                # Set column width (with some padding)
+                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        print(f"Saved {len(papers)} papers to {filename}")
+        return filename
+
+
+
     def run(self):
         """Main execution function"""
         print(f"Starting download of top {self.max_papers} cited cs.AI papers...")
@@ -214,6 +246,7 @@ class ArxivCitationDownloader:
         # Step 1: Get cs.AI papers from arXiv
         print("step 1 get paper list from arxiv")
         arxiv_papers = self.get_arxiv_cs_ai_papers(max_results=2000)
+        self.save_papers_to_excel(arxiv_papers) # save intermediate list for debug
         return
 
         # Step 2: Get citation counts from Semantic Scholar
@@ -275,3 +308,4 @@ if __name__ == "__main__":
 
 
     
+# %%

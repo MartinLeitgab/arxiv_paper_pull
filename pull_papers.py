@@ -170,7 +170,7 @@ class ArxivCitationDownloader:
                     
                 except requests.exceptions.HTTPError as e:
                     if response.status_code == 429:
-                        retry_after = int(response.headers.get("Retry-After", "60"))
+                        retry_after = int(response.headers.get("Retry-After", "5"))
                         print(f"Rate limit hit for '{paper}'. Retrying after {retry_after} seconds...")
                         time.sleep(retry_after)
                     else:

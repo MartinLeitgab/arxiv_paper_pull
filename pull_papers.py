@@ -237,10 +237,10 @@ class ArxivCitationDownloader:
                 except requests.exceptions.HTTPError as e:
                     if response.status_code == 429:
                         retry_after = int(response.headers.get("Retry-After", "1")) # keep frequent as IP-based and may open up soon
-                        print(f"Rate limit hit for '{paper}'. Retrying after {retry_after} seconds...")
+                        print(f"Rate limit hit for '{paper['arxiv_id']}'. Retrying after {retry_after} seconds...")
                         time.sleep(retry_after)
                     else:
-                        print(f"HTTP error for '{paper}': {e}")
+                        print(f"HTTP error for '{paper['arxiv_id']}': {e}")
                         break  # If it's not a retryable error, break to avoid infinite loop
                     #print(f"Error getting citations for {paper['arxiv_id']}: {e}")
                     #if response.status_code == 429:
@@ -254,7 +254,7 @@ class ArxivCitationDownloader:
                     #papers_with_citations.append(paper)
                     #time.sleep(self.request_delay)
                 except Exception as e:
-                    print(f"Unexpected error for '{paper}': {e}")
+                    print(f"Unexpected error for '{paper['arxiv_id']}': {e}")
                     break  # Handle other errors gracefully
     
         return papers_with_citations
